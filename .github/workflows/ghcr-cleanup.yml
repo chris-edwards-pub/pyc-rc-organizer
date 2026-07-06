@@ -1,0 +1,25 @@
+name: GHCR Retention Cleanup
+
+on:
+  schedule:
+    - cron: "0 4 * * 0"   # Sunday 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    name: Trim GHCR image tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Keep last 5 tagged versions, delete untagged
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: pyc-rc-organizer
+          owner: chris-edwards-pub
+          keep-n-tagged: 5
+          delete-untagged: true
+          exclude-tags: latest

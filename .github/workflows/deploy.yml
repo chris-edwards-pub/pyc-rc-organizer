@@ -1,0 +1,182 @@
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy (defaults to master)"
+        required: false
+        default: "master"
+        type: string
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REGISTRY: ghcr.io
+  IMAGE_NAME: chris-edwards-pub/pyc-rc-organizer
+
+jobs:
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+
+      - name: Extract version from app/__init__.py
+        id: version
+        run: |
+          VERSION=$(grep -oP '(?<=__version__ = ")[^"]+' app/__init__.py)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+
+  scan-image:
+    name: Scan Image for Vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build-and-push
+    permissions:
+      contents: read
+      security-events: write
+
+    env:
+      TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db:2
+      TRIVY_JAVA_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-java-db:1
+
+    steps:
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: table
+          exit-code: 1
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          output: trivy-results.txt
+
+      - name: Upload scan results as artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: trivy-vulnerability-report
+          path: trivy-results.txt
+          retention-days: 30
+
+      - name: Write Trivy results to job summary
+        if: always()
+        run: |
+          if [ -f trivy-results.txt ]; then
+            echo "## Trivy Vulnerability Scan Results" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat trivy-results.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Run Trivy for SARIF output
+        if: always()
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: scan-image
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Wait for any in-progress Lightsail deployment
+        run: |
+          SERVICE="${{ vars.CONTAINER_SERVICE_NAME }}"
+          for i in $(seq 1 60); do
+            STATE=$(aws lightsail get-container-service-deployments \
+              --service-name "$SERVICE" \
+              --query 'deployments[0].state' --output text 2>/dev/null || echo "")
+            echo "Latest Lightsail deployment state: ${STATE:-unknown} (attempt $i/60)"
+            if [ "$STATE" != "ACTIVATING" ]; then
+              echo "No deployment in progress — ready to deploy."
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Deploy to Lightsail Container Service
+        run: |
+          aws lightsail create-container-service-deployment \
+            --service-name ${{ vars.CONTAINER_SERVICE_NAME }} \
+            --containers '{
+              "web": {
+                "image": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}",
+                "ports": {"8000": "HTTP"},
+                "environment": {
+                  "DATABASE_URL": "mysql+pymysql://${{ vars.MYSQL_USER }}:${{ secrets.MYSQL_PASSWORD }}@${{ vars.DB_ENDPOINT }}/${{ vars.MYSQL_DATABASE }}",
+                  "SECRET_KEY": "${{ secrets.SECRET_KEY }}",
+                  "UPLOAD_FOLDER": "/app/uploads",
+                  "INIT_ADMIN_EMAIL": "${{ secrets.INIT_ADMIN_EMAIL }}",
+                  "INIT_ADMIN_PASSWORD": "${{ secrets.INIT_ADMIN_PASSWORD }}"
+                }
+              }
+            }' \
+            --public-endpoint '{
+              "containerName": "web",
+              "containerPort": 8000,
+              "healthCheck": {
+                "path": "/login",
+                "successCodes": "200-499",
+                "intervalSeconds": 30,
+                "timeoutSeconds": 5
+              }
+            }'

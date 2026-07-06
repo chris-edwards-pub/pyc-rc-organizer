@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto">
+        <h1>Welcome, {{ current_user.display_name }}</h1>
+        <p class="lead">This is your app's landing page. Start building.</p>
+
+        <div class="card mt-4">
+            <div class="card-body">
+                <h5 class="card-title">Where to go next</h5>
+                <ul>
+                    <li>Add a new blueprint under <code>{{ project_name.lower().replace(' ', '_') }}/</code> for your first feature.</li>
+                    <li>Add a model to <code>models.py</code> and run <code>flask db migrate -m "add my_model"</code>.</li>
+                    <li>Read <a href="/AGENTS.md">AGENTS.md</a> for the project standards.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
