@@ -1,5 +1,9 @@
 # Version History
 
+## 0.1.3
+
+- Reset accidental executable bit on `VERSIONS.md` and `app/__init__.py` (CloudStorage sync artifact)
+
 ## 0.1.2
 
 - Pause daily Trivy vulnerability scan until we go live (still runnable via `workflow_dispatch`)
