@@ -1,5 +1,9 @@
 # Version History
 
+## 0.1.2
+
+- Pause daily Trivy vulnerability scan until we go live (still runnable via `workflow_dispatch`)
+
 ## 0.1.1
 
 - Bump `cryptography` to `>=50.0.0` to resolve CVE-2026-69247 and CVE-2026-69249 (both HIGH, flagged by Trivy)

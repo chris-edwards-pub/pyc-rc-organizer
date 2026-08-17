@@ -5,7 +5,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_wtf.csrf import CSRFProtect
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 db = SQLAlchemy()
 migrate = Migrate()
